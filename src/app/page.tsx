@@ -16,8 +16,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import {
   Plus, TrendingUp, TrendingDown, ListPlus, Tags, Banknote, Settings, Trash2, Trophy, BarChart3, Brain
 } from 'lucide-react';
-
-// ❌ SUPPRIMÉ: import { AreaChart, ... } from 'recharts';
+import {
+  AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, Line, BarChart, Bar, Cell, ReferenceLine, CartesianGrid
+} from 'recharts';
 
 /* ——— Constantes UI ——— */
 const ACCENT = '#ff008e';
@@ -48,7 +49,9 @@ function AuthButton() {
   const [email, setEmail] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
+    supabase.auth.getSession().then(({ data }) => {
+      setEmail(data.session?.user.email ?? null);
+    });
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       setEmail(session?.user.email ?? null);
     });
@@ -191,7 +194,7 @@ export default function TradePulseApp() {
   }, [router]);
   if (!authChecked) return null; // évite le flash
 
-  // ✅ IMPORTANT: on attend le montage **et** on évite d'importer `recharts` tant qu'on n'est pas côté client
+  /* ✅ Anti-crash prod : on rend les graphes uniquement après mount */
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
@@ -461,97 +464,94 @@ export default function TradePulseApp() {
           <StatCard title="Pire série de pertes" value={bestLoss} icon={<TrendingDown />} variant="worst" />
         </div>
 
-        {/* Courbe d’équité */}
-        <Card className="card-plain rounded-2xl">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <div>
-              <CardTitle className={`text-2xl font-extrabold ${titleColor}`}>{titleValue}</CardTitle>
-              <div className="text-xs text-white/60">{subtitle}</div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Select value={settings.currencyCode} onValueChange={(v: 'EUR'|'USD') => setSettings(s => ({ ...s, currencyCode: v }))}>
-                <SelectTrigger className="bg-white/5 border-white/20 text-white h-8 px-2"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="EUR">EUR (€)</SelectItem><SelectItem value="USD">USD ($)</SelectItem></SelectContent>
-              </Select>
-              <Button variant="ghost" className="rounded-xl text-white" onClick={() => setSettings(s => ({ ...s, showMonetary: !s.showMonetary }))} title={settings.showMonetary ? 'Afficher en R' : 'Afficher en €/$'}>
-                <Banknote className={`h-5 w-5 ${settings.showMonetary ? '' : 'opacity-50'}`} />
-              </Button>
-              <Button variant="ghost" className="rounded-xl text-white" onClick={() => setOpenSettings(true)} title="Réglages">
-                <Settings className="h-5 w-5" />
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="h-[26rem] md:h-[30rem]">
-            {/* ⛑️ On ne charge Recharts qu’après le mount */}
-            {!mounted ? null : (() => {
-              // eslint-disable-next-line @typescript-eslint/no-var-requires
-              const { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, Line, ReferenceLine, CartesianGrid } = require('recharts');
-              return (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={equityR} margin={{ left: 12, right: 12 }}>
-                    <defs>
-                      <linearGradient id="eqPos" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor={GREEN} stopOpacity={0.9} />
-                        <stop offset="95%" stopColor={GREEN} stopOpacity={0} />
-                      </linearGradient>
-                      <linearGradient id="eqNeg" x1="0" y1="1" x2="0" y2="0">
-                        <stop offset="5%"  stopColor={RED} stopOpacity={0.9} />
-                        <stop offset="95%" stopColor={RED} stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
+        {/* Courbe d’équité — rendue seulement après mount pour éviter le crash prod */}
+        {mounted && (
+          <Card className="card-plain rounded-2xl">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className={`text-2xl font-extrabold ${titleColor}`}>{titleValue}</CardTitle>
+                <div className="text-xs text-white/60">{subtitle}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Select value={settings.currencyCode} onValueChange={(v: 'EUR'|'USD') => setSettings(s => ({ ...s, currencyCode: v }))}>
+                  <SelectTrigger className="bg-white/5 border-white/20 text-white h-8 px-2"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="EUR">EUR (€)</SelectItem><SelectItem value="USD">USD ($)</SelectItem></SelectContent>
+                </Select>
+                <Button variant="ghost" className="rounded-xl text-white" onClick={() => setSettings(s => ({ ...s, showMonetary: !s.showMonetary }))} title={settings.showMonetary ? 'Afficher en R' : 'Afficher en €/$'}>
+                  <Banknote className={`h-5 w-5 ${settings.showMonetary ? '' : 'opacity-50'}`} />
+                </Button>
+                <Button variant="ghost" className="rounded-xl text-white" onClick={() => setOpenSettings(true)} title="Réglages">
+                  <Settings className="h-5 w-5" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="h-[26rem] md:h-[30rem]">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={equityR} margin={{ left: 12, right: 12 }}>
+                  <defs>
+                    <linearGradient id="eqPos" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor={GREEN} stopOpacity={0.9} />
+                      <stop offset="95%" stopColor={GREEN} stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="eqNeg" x1="0" y1="1" x2="0" y2="0">
+                      <stop offset="5%"  stopColor={RED} stopOpacity={0.9} />
+                      <stop offset="95%" stopColor={RED} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
 
-                    <XAxis dataKey="x" type="number" domain={['dataMin','dataMax']} hide />
-                    <YAxis hide domain={yDomain} />
-                    <Tooltip
-                      content={({ active, payload }: any) => {
-                        if (!active || !payload || !payload.length) return null;
-                        const p: any = payload[0]?.payload || {};
-                        const v = typeof p.value === 'number' ? p.value : 0;
-                        return (
-                          <div className="rounded-md border border-white/20 bg-black/70 px-3 py-2 text-xs text-white">
-                            <div className="font-semibold mb-1">{p.date ? `Trade du ${p.date}` : 'Point technique'}</div>
-                            <div>{settings.showMonetary ? fmtMoney(v) : fmtR(v)}</div>
-                          </div>
-                        );
-                      }}
-                    />
+                  <XAxis dataKey="x" type="number" domain={['dataMin','dataMax']} hide />
+                  <YAxis hide domain={yDomain} />
+                  <Tooltip
+                    content={({ active, payload }: any) => {
+                      if (!active || !payload || !payload.length) return null;
+                      const p: any = payload[0]?.payload || {};
+                      const v = typeof p.value === 'number' ? p.value : 0;
+                      return (
+                        <div className="rounded-md border border-white/20 bg-black/70 px-3 py-2 text-xs text-white">
+                          <div className="font-semibold mb-1">{p.date ? `Trade du ${p.date}` : 'Point technique'}</div>
+                          <div>{settings.showMonetary ? fmtMoney(v) : fmtR(v)}</div>
+                        </div>
+                      );
+                    }}
+                  />
 
-                    {segments.map((seg, i) => (
-                      <Area
-                        key={i}
-                        type="linear"
-                        data={seg.data}
-                        dataKey="value"
-                        stroke="none"
-                        fill={seg.sign >= 0 ? 'url(#eqPos)' : 'url(#eqNeg)'}
-                        isAnimationActive={false}
-                      />
-                    ))}
-
-                    <Line
+                  {segments.map((seg, i) => (
+                    <Area
+                      key={i}
                       type="linear"
+                      data={seg.data}
                       dataKey="value"
-                      stroke={LINE}
-                      strokeWidth={2}
-                      dot={false}
+                      stroke="none"
+                      fill={seg.sign >= 0 ? 'url(#eqPos)' : 'url(#eqNeg)'}
                       isAnimationActive={false}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      connectNulls
                     />
-                  </AreaChart>
-                </ResponsiveContainer>
-              );
-            })()}
-          </CardContent>
-        </Card>
+                  ))}
 
-        {/* Mini-charts */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <MiniBarCard title={`Profit par symbole (${unitLabel})`} data={aggregate(byKey('symbol', filtered, Rs, valueFromR)).slice(0,8)} unitLabel={unitLabel} />
-          <MiniBarCard title={`Profit par setup (${unitLabel})`}  data={aggregate(byKey('setup',  filtered, Rs, valueFromR)).slice(0,8)} unitLabel={unitLabel} />
-          <MiniBarCard title={`Profit par direction (${unitLabel})`} data={aggregate(byKey('direction',filtered, Rs, valueFromR))} unitLabel={unitLabel} />
-        </div>
+                  <Line
+                    type="linear"
+                    dataKey="value"
+                    stroke={LINE}
+                    strokeWidth={2}
+                    dot={false}
+                    isAnimationActive={false}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    connectNulls
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Mini-charts — rendus seulement après mount */}
+        {mounted && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <MiniBarCard title={`Profit par symbole (${unitLabel})`} data={aggregate(byKey('symbol', filtered, Rs, valueFromR)).slice(0,8)} unitLabel={unitLabel} />
+            <MiniBarCard title={`Profit par setup (${unitLabel})`}  data={aggregate(byKey('setup',  filtered, Rs, valueFromR)).slice(0,8)} unitLabel={unitLabel} />
+            <MiniBarCard title={`Profit par direction (${unitLabel})`} data={aggregate(byKey('direction',filtered, Rs, valueFromR))} unitLabel={unitLabel} />
+          </div>
+        )}
 
         {/* Journal */}
         <Card className="grad-journal rounded-2xl">
@@ -705,10 +705,6 @@ function StatCard({
 function MiniBarCard({ title, data, unitLabel }:{
   title:string; data:{name:string; value:number}[]; unitLabel:string
 }) {
-  // ⚠️ Charge `recharts` seulement au rendu client
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid, Cell } = require('recharts');
-
   return (
     <Card className="grad-mini rounded-2xl">
       <CardHeader className="pb-2"><CardTitle className="text-sm text-white/85">{title}</CardTitle></CardHeader>
@@ -881,6 +877,7 @@ function getRangeStart(range: string) {
   return null;
 }
 
+/* ——— Tests courts ——— */
 function runTests(){
   function A(a:any,e:any,m:string){const ok=(Number.isNaN(a)&&Number.isNaN(e))||a===e;if(!ok)throw new Error(`${m}: got ${a}, expected ${e}`);}
   try{
