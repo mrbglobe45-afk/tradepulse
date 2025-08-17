@@ -1,91 +1,96 @@
-'use client';
+// lib/trades.ts
+"use client";
 
-import { supabase } from './supabaseClient';
+import { supabase } from "@/lib/supabaseClient";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 
 export type DbTrade = {
-  id: string;                 // uuid
-  user_id: string;            // attribué à l'utilisateur connecté
-  date: string;               // 'YYYY-MM-DD'
+  id: string;
+  user_id: string;
+  date: string; // "YYYY-MM-DD"
   symbol: string;
-  direction: 'LONG' | 'SHORT';
+  direction: "LONG" | "SHORT";
   setup: string | null;
-  r: number;                  // résultat en R
-  created_at: string;
+  r: number; // valeur en R stockée en base
 };
 
-/** Récupère l'utilisateur connecté (ou null) */
 export async function getUserId(): Promise<string | null> {
   const { data } = await supabase.auth.getUser();
   return data.user?.id ?? null;
 }
 
-/** Lit tous les trades de l'utilisateur, triés par date ASC */
 export async function fetchTrades(): Promise<DbTrade[]> {
+  const uid = await getUserId();
+  if (!uid) return [];
   const { data, error } = await supabase
-    .from('trades')
-    .select('*')
-    .order('date', { ascending: true });
+    .from("trades")
+    .select("id,user_id,date,symbol,direction,setup,r")
+    .eq("user_id", uid) // redondant si RLS filtre déjà, mais évite les surprises
+    .order("date", { ascending: true });
 
-  if (error) throw error;
-  return data as DbTrade[];
+  if (error) throw new Error(error.message);
+  return (data ?? []) as DbTrade[];
 }
 
-/** Crée / met à jour un trade (upsert).
- *  Si t.id est absent, on génère un uuid côté navigateur (compatible Postgres).
- */
-export async function saveTrade(t: {
+type SaveInput = {
   id?: string;
   date: string;
   symbol: string;
-  direction: 'LONG' | 'SHORT';
-  setup?: string | null;
-  R: number; // on mappe R (UI) -> r (DB)
-}): Promise<DbTrade> {
+  direction: "LONG" | "SHORT";
+  setup: string | null;
+  R: number;
+};
+
+export async function saveTrade(input: SaveInput): Promise<DbTrade> {
   const uid = await getUserId();
-  if (!uid) throw new Error('Not signed in');
+  if (!uid) throw new Error("Not authenticated");
 
   const payload = {
-    id: t.id && t.id.length === 36 ? t.id : crypto.randomUUID(),
+    id: input.id, // si présent → update via upsert
     user_id: uid,
-    date: t.date,
-    symbol: t.symbol,
-    direction: t.direction,
-    setup: t.setup ?? null,
-    r: Number.isFinite(t.R) ? t.R : 0,
+    date: input.date,
+    symbol: input.symbol,
+    direction: input.direction,
+    setup: input.setup,
+    r: Number(input.R) || 0,
   };
 
   const { data, error } = await supabase
-    .from('trades')
-    .upsert(payload, { onConflict: 'id' })
-    .select()
+    .from("trades")
+    .upsert(payload, { onConflict: "id" })
+    .select("id,user_id,date,symbol,direction,setup,r")
     .single();
 
-  if (error) throw error;
+  if (error) throw new Error(error.message);
   return data as DbTrade;
 }
 
-/** Supprime un trade par id */
 export async function deleteTrade(id: string): Promise<void> {
-  const { error } = await supabase.from('trades').delete().eq('id', id);
-  if (error) throw error;
+  const uid = await getUserId();
+  if (!uid) throw new Error("Not authenticated");
+  const { error } = await supabase
+    .from("trades")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", uid); // cohérent avec des policies RLS strictes
+  if (error) throw new Error(error.message);
 }
 
-/** Abonnement temps réel : on écoute toutes les modifs sur la table 'trades' */
 export function subscribeTrades(
-  userId: string,
-  onChange: (evt: { type: 'INSERT' | 'UPDATE' | 'DELETE' }) => void
-) {
-  const channel = supabase
-    .channel('trades-realtime')
+  uid: string,
+  onChange: () => void
+): () => void {
+  // Assurez-vous que la réplication Realtime est activée côté Supabase pour la table 'trades'
+  const channel: RealtimeChannel = supabase
+    .channel(`realtime:trades:${uid}`)
     .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'trades', filter: `user_id=eq.${userId}` },
-      (payload) => {
-        const t = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE';
-        onChange({ type: t });
-      }
+      "postgres_changes",
+      { event: "*", schema: "public", table: "trades", filter: `user_id=eq.${uid}` },
+      () => onChange()
     )
     .subscribe();
 
-  return () => supabase.removeChannel(channel);
+  return () => {
+    supabase.removeChannel(channel);
+  };
 }
