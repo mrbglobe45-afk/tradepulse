@@ -1,30 +1,27 @@
 'use client';
 
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Auth } from '@supabase/auth-ui-react';
 import { ThemeSupa } from '@supabase/auth-ui-shared';
 import { supabase } from '@/lib/supabaseClient';
 
 export default function AuthPage() {
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0b0b10]">
-      {/* petit override de styles du bouton */}
-      <style jsx global>{`
-        .sbui-btn-primary, .sbui-btn-primary:hover {
-          background-color: #ff008e !important;
-          border-color: #ff008e !important;
-        }
-      `}</style>
+  const router = useRouter();
 
-      <Auth
-        supabaseClient={supabase}
-        appearance={{ theme: ThemeSupa }}
-        providers={[]}
-        theme="dark"
-        // pas de 'lang' ici ; si tu veux du français, on fera la localisation plus tard
-        redirectTo={
-          typeof window === 'undefined' ? undefined : `${window.location.origin}/`
-        }
-      />
-    </div>
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+      if (session) router.replace('/');
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [router]);
+
+  return (
+    <main className="min-h-screen flex items-center justify-center bg-[#0b0b10] p-6">
+      <div className="w-full max-w-md bg-white/5 border border-white/10 rounded-2xl p-6 text-white">
+        <h1 className="text-lg font-bold mb-4">Connexion / Inscription</h1>
+        <Auth supabaseClient={supabase} appearance={{ theme: ThemeSupa }} providers={[]} />
+      </div>
+    </main>
   );
 }
