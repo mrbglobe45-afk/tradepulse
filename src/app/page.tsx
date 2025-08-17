@@ -2,8 +2,8 @@
 
 import React, { useMemo, useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-import { fetchTrades, saveTrade, deleteTrade, subscribeTrades, getUserId, type DbTrade } from "@/lib/trades";
 
 import { motion } from "framer-motion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +25,7 @@ const CURRENCIES = { EUR: "€", USD: "$" };
 
 /* ——— Bouton Connexion / Déconnexion ——— */
 function AuthButton() {
+  const router = useRouter();
   const [email, setEmail] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -33,7 +34,6 @@ function AuthButton() {
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       setEmail(session?.user.email ?? null);
-      if (!session) window.location.href = "/auth"; // redirect quand on se déconnecte
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -43,7 +43,10 @@ function AuthButton() {
       <span className="hidden sm:block text-white/70 text-xs">{email}</span>
       <button
         className="rounded-2xl bg-transparent text-white border border-white/30 hover:bg-white/10 px-3 h-9"
-        onClick={() => supabase.auth.signOut()}
+        onClick={async () => {
+          await supabase.auth.signOut();
+          router.replace('/auth');
+        }}
       >
         Déconnexion
       </button>
@@ -107,7 +110,7 @@ function safeNumber(x: any) {
 /* ——— Calculs Equity ——— */
 function buildEquityR(dates: string[], Rs: number[]) {
   let cum = 0;
-  const arr = dates.map((date, i) => {
+  const arr = dates.map((date: string, i: number) => {
     cum += safeNumber(Rs[i]);
     return { date, x: i + 1, value: cum };
   });
@@ -149,16 +152,23 @@ function longestStreaks(Rs: number[]) {
 }
 
 /* ——— App ——— */
-type UiTrade = {
-  id: string;
-  date: string;
-  symbol: string;
-  direction: 'LONG' | 'SHORT';
-  setup: string | null;
-  R: number;
-};
-
 export default function TradePulseApp() {
+  const router = useRouter();
+
+  // Garde d'auth : si pas de session, on redirige vers /auth
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  useEffect(() => {
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      if (!data.session) {
+        router.replace('/auth');
+      }
+      setCheckingAuth(false);
+    });
+    return () => { mounted = false; };
+  }, [router]);
+
   /* SETTINGS */
   const [settings, setSettings] = useState({
     startingEquity: 10000,
@@ -167,11 +177,12 @@ export default function TradePulseApp() {
     showMonetary: false,
   });
 
-  /* Trades (désormais en base) */
-  const [trades, setTrades] = useState<UiTrade[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  /* Symbols / setups restent en local pour l’instant */
+  /* Données persistées (localStorage) */
+  const [trades, setTrades] = useState<any[]>(() => {
+    if (typeof window === "undefined") return [];
+    try { return JSON.parse(localStorage.getItem("mindrisk_trades") || "[]"); }
+    catch { return []; }
+  });
   const [symbols, setSymbols] = useState<string[]>(() => {
     if (typeof window === "undefined") return [];
     try { return JSON.parse(localStorage.getItem("mindrisk_symbols") || "[]"); }
@@ -182,63 +193,17 @@ export default function TradePulseApp() {
     try { return JSON.parse(localStorage.getItem("mindrisk_setups") || "[]"); }
     catch { return []; }
   });
-  useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("mindrisk_symbols", JSON.stringify(symbols)); }, [symbols]);
-  useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("mindrisk_setups", JSON.stringify(setups)); }, [setups]);
 
   /* Filtres/UI */
   const [filters, setFilters] = useState({ q: "", symbol: "ALL", direction: "ALL", setup: "ALL" });
   const [range, setRange] = useState("ALL");
   const [openNewTrade, setOpenNewTrade] = useState(false);
-  const [editing, setEditing] = useState<UiTrade | null>(null);
+  const [editing, setEditing] = useState<any>(null);
   const [openSymbolsManager, setOpenSymbolsManager] = useState(false);
   const [openSetupsManager, setOpenSetupsManager] = useState(false);
   const [openSettings, setOpenSettings] = useState(false);
 
-  /* Redirection si déconnecté + chargement des trades + Realtime */
-  useEffect(() => {
-    let unsub: (() => void) | null = null;
-
-    async function boot() {
-      const { data } = await supabase.auth.getSession();
-      if (!data.session) {
-        window.location.href = "/auth";
-        return;
-      }
-      await reloadTrades();
-
-      const uid = await getUserId();
-      if (uid) {
-        unsub = subscribeTrades(uid, () => {
-          // on recharge simplement (suffisant et robuste)
-          reloadTrades();
-        });
-      }
-    }
-
-    boot();
-
-    return () => { if (unsub) unsub(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function reloadTrades() {
-    setLoading(true);
-    const rows = await fetchTrades(); // DbTrade[]
-    const ui = rows
-      .sort((a, b) => (a.date < b.date ? -1 : 1))
-      .map((t: DbTrade) => ({
-        id: t.id,
-        date: t.date,
-        symbol: t.symbol,
-        direction: t.direction,
-        setup: t.setup,
-        R: Number(t.r) || 0,
-      }));
-    setTrades(ui);
-    setLoading(false);
-  }
-
-  /* Brouillons pour la modale Réglages */
+  /* Brouillons Réglages */
   const [startEqDraft, setStartEqDraft] = useState("");
   const [riskDraft, setRiskDraft] = useState("");
   useEffect(() => {
@@ -248,26 +213,38 @@ export default function TradePulseApp() {
     }
   }, [openSettings, settings.startingEquity, settings.defaultRiskPerTrade]);
 
+  /* Persistences */
+  useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("mindrisk_trades", JSON.stringify(trades)); }, [trades]);
+  useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("mindrisk_symbols", JSON.stringify(symbols)); }, [symbols]);
+  useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("mindrisk_setups", JSON.stringify(setups)); }, [setups]);
+
   /* Filtres + calculs */
   const startRange = useMemo(() => getRangeStart(range), [range]);
 
   const filtered = useMemo(() => {
     return trades
-      .filter(t => (filters.symbol === "ALL" ? true : t.symbol === filters.symbol))
-      .filter(t => (filters.direction === "ALL" ? true : t.direction === filters.direction))
-      .filter(t => (filters.setup === "ALL" ? true : (t.setup || "") === filters.setup))
-      .filter(t => {
+      .filter((t: any) => (filters.symbol === "ALL" ? true : t.symbol === filters.symbol))
+      .filter((t: any) => (filters.direction === "ALL" ? true : t.direction === filters.direction))
+      .filter((t: any) => (filters.setup === "ALL" ? true : (t.setup || "") === filters.setup))
+      .filter((t: any) => {
         if (!filters.q) return true;
         const q = filters.q.toLowerCase();
-        const blob = [t.symbol, t.direction, t.setup || ""].join(" ").toLowerCase();
+        const blob = [t.symbol, t.direction, t.setup || "", t.notes || ""].join(" ").toLowerCase();
         return blob.includes(q);
       })
-      .filter(t => (startRange ? t.date >= startRange : true))
-      .sort((a,b)=> (a.date < b.date ? -1 : 1));
+      .filter((t: any) => (startRange ? t.date >= startRange : true))
+      .sort((a: any, b: any) => (a.date < b.date ? -1 : 1));
   }, [trades, filters, startRange]);
 
-  const Rs = useMemo(() => filtered.map(t => t.R || 0), [filtered]);
-  const equityR = useMemo(() => densifyAtZero(buildEquityR(filtered.map(t=>t.date), Rs)), [filtered, Rs]);
+  const Rs = useMemo(
+    () => filtered.map((t: any) => (typeof t.R === "number" ? t.R : computeR(t)) || 0),
+    [filtered]
+  );
+
+  const equityR = useMemo(
+    () => densifyAtZero(buildEquityR(filtered.map((t: any) => t.date), Rs)),
+    [filtered, Rs]
+  );
 
   const segments = useMemo(() => {
     const pts = equityR; if (pts.length < 2) return [];
@@ -305,7 +282,7 @@ export default function TradePulseApp() {
   const valueFromR = (valR: number) => settings.showMonetary ? valR * settings.defaultRiskPerTrade : valR;
   const unitLabel = settings.showMonetary ? currencySymbol : "R";
 
-  const rowsWithRAsc  = useMemo(() => filtered.map((t, i) => ({ trade: t, R: Rs[i] as number })), [filtered, Rs]);
+  const rowsWithRAsc  = useMemo(() => filtered.map((t: any, i: number) => ({ trade: t, R: Rs[i] as number })), [filtered, Rs]);
   const rowsWithRDesc = useMemo(() => [...rowsWithRAsc].reverse(), [rowsWithRAsc]);
   const [showAllRows, setShowAllRows] = useState(false);
   const showRows = useMemo(() => (showAllRows ? rowsWithRDesc : rowsWithRDesc.slice(0,3)), [rowsWithRDesc, showAllRows]);
@@ -324,29 +301,11 @@ export default function TradePulseApp() {
     ? `Capital total : ${fmtMoneyRight(r2(totalCapitalMoney), settings.currencyCode)}`
     : "Courbe d’équité — R cumulés";
 
-  /* Actions reliées à Supabase */
-  async function upsertTrade(t: UiTrade | Omit<UiTrade, "id"> & { id?: string }) {
-    const saved = await saveTrade({
-      id: (t as UiTrade).id,
-      date: t.date,
-      symbol: t.symbol,
-      direction: t.direction,
-      setup: t.setup ?? null,
-      R: t.R,
-    });
-    // on met à jour l’état local immédiatement (optimiste)
-    setTrades(cur => {
-      const idx = cur.findIndex(x => x.id === saved.id);
-      const item: UiTrade = { id: saved.id, date: saved.date, symbol: saved.symbol, direction: saved.direction, setup: saved.setup, R: Number(saved.r) || 0 };
-      if (idx === -1) return [...cur, item].sort((a,b)=> (a.date < b.date ? -1 : 1));
-      const next = cur.slice(); next[idx] = item; return next.sort((a,b)=> (a.date < b.date ? -1 : 1));
-    });
-  }
+  function upsertTrade(t: any) { if (t.id) setTrades(cur => cur.map((x: any) => x.id === t.id ? { ...t } : x)); else setTrades(cur => [...cur, { ...t, id: uid() }]); }
+  function removeTrade(id: string) { setTrades(cur => cur.filter((t: any) => t.id !== id)); }
 
-  async function removeTrade(id: string) {
-    await deleteTrade(id);
-    setTrades(cur => cur.filter(t => t.id !== id));
-  }
+  // Tant que l’auth n’est pas checkée, on n’affiche rien (évite le flash)
+  if (checkingAuth) return null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0b0b10] via-[#141421] to-[#0b0b10] text-white p-6">
@@ -360,7 +319,7 @@ export default function TradePulseApp() {
         .grad-kpi-best{background:radial-gradient(120% 140% at 20% -10%, rgba(0,245,168,.30) 0%, transparent 60%),radial-gradient(120% 140% at 120% 0%, rgba(126,109,255,.16) 0%, transparent 65%),rgba(255,255,255,.05);border:1px solid rgba(0,245,168,.28);}
         .grad-kpi-worst{background:radial-gradient(120% 140% at 15% -10%, rgba(255,47,102,.28) 0%, transparent 60%),radial-gradient(110% 140% at 120% 0%, rgba(255,125,150,.16) 0%, transparent 65%),rgba(255,255,255,.05);border:1px solid rgba(255,47,102,.28);}
         .grad-journal{background:radial-gradient(140% 140% at -10% 110%, rgba(126,109,255,.45) 0%, rgba(126,109,255,.18) 45%, transparent 65%),radial-gradient(120% 140% at 120% -10%, rgba(0,200,255,.35) 0%, rgba(0,200,255,.12) 55%, transparent 70%),radial-gradient(100% 100% at 50% 0%, rgba(255,0,142,.25) 0%, transparent 70%),rgba(255,255,255,.05);border:1px solid rgba(126,109,255,.35);box-shadow:0 12px 32px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.06);}
-        .grad-mini{background:radial-gradient(130% 160% at 0% 0%, rgba(32,120,255,.20) 0%, transparent 60%),radial-gradient(110% 150% at 100% 15%, rgba(0,200,255,.14) 0%, transparent 65%),linear-gradient(180deg, rgba(255,255,255,.04), rgba(0,0,0,.10));border:1px solid rgba(180,200,255,.20);box-shadow: 0 8px 18px rgba(0,0,0,.25), inset 0 0 0 1px rgba(255,255,255,.04);}
+        .grad-mini{background:radial-gradient(130% 160% at 0% 0%, rgba(32,120,255,.20) 0%, transparent 60%),radial-gradient(110% 150% at 100% 15%, rgba(0,200,255,.14) 0%, transparent 65%),linear-gradient(180deg, rgba(255,255,255,.04), rgba(0,0,0,.10));border:1px solid rgba(180,200,255,.20);box-shadow:0 8px 18px rgba(0,0,0,.25), inset 0 0 0 1px rgba(255,255,255,.04);}
       `}</style>
 
       <div className="max-w-7xl mx-auto space-y-6">
@@ -370,7 +329,7 @@ export default function TradePulseApp() {
             <Brain size={50} color={ACCENT} strokeWidth={2.25} />
             <div>
               <h1 className="tp-wordmark text-3xl md:text-4xl font-extrabold tracking-tight">TradePulse</h1>
-              <p className="text-sm text-white/80">Journal de trading — synchronisé</p>
+              <p className="text-sm text-white/80">Journal de trading — prototype local</p>
             </div>
           </div>
 
@@ -388,10 +347,10 @@ export default function TradePulseApp() {
                   </DialogTitle>
                 </DialogHeader>
                 <TradeForm
-                  initial={ editing || { date: new Date().toISOString().slice(0, 10), direction: "LONG", R: 0 } }
+                  initial={ editing || { date: new Date().toISOString().slice(0, 10), direction: "LONG" } }
                   symbols={symbols} setups={setups}
                   onCancel={() => { setEditing(null); setOpenNewTrade(false); }}
-                  onSave={async (t) => { await upsertTrade(t); setEditing(null); setOpenNewTrade(false); }}
+                  onSave={(t: any) => { upsertTrade(t); setEditing(null); setOpenNewTrade(false); }}
                 />
               </DialogContent>
             </Dialog>
@@ -439,7 +398,7 @@ export default function TradePulseApp() {
                   <SelectTrigger className="w-full bg-white/5 border-white/20 text-white"><SelectValue placeholder="Tous" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="ALL">Tous</SelectItem>
-                    {symbols.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
+                    {symbols.map((s: string) => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                   </SelectContent>
                 </Select>
               </div>
@@ -459,7 +418,7 @@ export default function TradePulseApp() {
                 <Select value={filters.setup} onValueChange={(v) => setFilters(f => ({ ...f, setup: v }))}>
                   <SelectTrigger className="w-full bg-white/5 border-white/20 text-white"><SelectValue placeholder="Tous" /></SelectTrigger>
                   <SelectContent>
-                    {setups.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
+                    {setups.map((s: string) => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                     <SelectItem value="ALL">Tous</SelectItem>
                   </SelectContent>
                 </Select>
@@ -564,67 +523,59 @@ export default function TradePulseApp() {
 
         {/* Journal */}
         <Card className="grad-journal rounded-2xl">
-          <CardHeader>
-            <CardTitle className="text-white">Journal</CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle className="text-white">Journal</CardTitle></CardHeader>
           <CardContent className="overflow-x-auto px-4">
-            {loading ? (
-              <div className="py-8 text-center text-white/70">Chargement…</div>
-            ) : (
-              <>
-                <table className="w-full text-sm table-auto">
-                  <thead className="text-white/90">
-                    <tr className="border-b border-white/20">
-                      <th className="text-left py-2 pr-3">Date</th>
-                      <th className="text-left py-2 pr-3">Symbole</th>
-                      <th className="text-left py-2 pr-3">Dir</th>
-                      <th className="text-left py-2 pr-3">Setup</th>
-                      <th className="text-left py-2 pr-3">{unitLabel}</th>
-                      <th className="text-right py-2 pl-3 w-0"></th>
+            <table className="w-full text-sm table-auto">
+              <thead className="text-white/90">
+                <tr className="border-b border-white/20">
+                  <th className="text-left py-2 pr-3">Date</th>
+                  <th className="text-left py-2 pr-3">Symbole</th>
+                  <th className="text-left py-2 pr-3">Dir</th>
+                  <th className="text-left py-2 pr-3">Setup</th>
+                  <th className="text-left py-2 pr-3">{unitLabel}</th>
+                  <th className="text-right py-2 pl-3 w-0"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rowsWithRDesc.slice(0, showAllRows ? rowsWithRDesc.length : 3).map(({ trade: t, R }: {trade:any; R:number}) => {
+                  const out = settings.showMonetary ? `${currencySymbol}${r2(R * settings.defaultRiskPerTrade)}` : `${r2(R)}R`;
+                  const pos = R > 0;
+                  return (
+                    <tr key={t.id} className="border-b border-white/10 hover:bg-white/10">
+                      <td className="py-2 pr-3 whitespace-nowrap text-white/90">{t.date}</td>
+                      <td className="py-2 pr-3 text-white/90">{t.symbol}</td>
+                      <td className="py-2 pr-3 text-white/90">{t.direction}</td>
+                      <td className="py-2 pr-3 text-white/90">{t.setup || "—"}</td>
+                      <td className={`py-2 pr-3 font-semibold ${pos ? "text-emerald-400" : R < 0 ? "text-rose-400" : "text-white"}`}>{out}</td>
+                      <td className="py-2 pl-3">
+                        <div className="flex justify-end gap-2 whitespace-nowrap">
+                          <Button variant="outline" size="sm" className="rounded-xl" onClick={() => { setEditing(t); setOpenNewTrade(true); }}>Éditer</Button>
+                          <button
+                            type="button"
+                            aria-label="Supprimer"
+                            onClick={() => removeTrade(t.id)}
+                            className="inline-flex items-center justify-center h-8 w-8 rounded-xl border transition-colors focus:outline-none focus:ring-2"
+                            style={{ borderColor: RED, color: RED, backgroundColor: "transparent" }}
+                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = `${RED}20`)}
+                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {showRows.map(({ trade: t, R }) => {
-                      const out = settings.showMonetary ? `${currencySymbol}${r2(R * settings.defaultRiskPerTrade)}` : `${r2(R)}R`;
-                      const pos = R > 0;
-                      return (
-                        <tr key={t.id} className="border-b border-white/10 hover:bg-white/10">
-                          <td className="py-2 pr-3 whitespace-nowrap text-white/90">{t.date}</td>
-                          <td className="py-2 pr-3 text-white/90">{t.symbol}</td>
-                          <td className="py-2 pr-3 text-white/90">{t.direction}</td>
-                          <td className="py-2 pr-3 text-white/90">{t.setup || "—"}</td>
-                          <td className={`py-2 pr-3 font-semibold ${pos ? "text-emerald-400" : R < 0 ? "text-rose-400" : "text-white"}`}>{out}</td>
-                          <td className="py-2 pl-3">
-                            <div className="flex justify-end gap-2 whitespace-nowrap">
-                              <Button variant="outline" size="sm" className="rounded-xl" onClick={() => { setEditing(t); setOpenNewTrade(true); }}>Éditer</Button>
-                              <button
-                                type="button"
-                                aria-label="Supprimer"
-                                onClick={() => removeTrade(t.id)}
-                                className="inline-flex items-center justify-center h-8 w-8 rounded-xl border transition-colors focus:outline-none focus:ring-2"
-                                style={{ borderColor: RED, color: RED, backgroundColor: "transparent" }}
-                                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = `${RED}20`)}
-                                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {rowsWithRAsc.length === 0 && (<tr><td colSpan={6} className="py-6 text-center text-white/60">Aucun élément pour l’instant.</td></tr>)}
-                  </tbody>
-                </table>
+                  );
+                })}
+                {rowsWithRAsc.length === 0 && (<tr><td colSpan={6} className="py-6 text-center text-white/60">Aucun élément pour l’instant.</td></tr>)}
+              </tbody>
+            </table>
 
-                {rowsWithRAsc.length > 3 && (
-                  <div className="flex justify-center pt-3">
-                    <Button variant="outline" size="sm" className="rounded-xl" onClick={() => setShowAllRows(v => !v)}>
-                      {showAllRows ? "Afficher moins" : "Afficher plus"}
-                    </Button>
-                  </div>
-                )}
-              </>
+            {rowsWithRAsc.length > 3 && (
+              <div className="flex justify-center pt-3">
+                <Button variant="outline" size="sm" className="rounded-xl" onClick={() => setShowAllRows((v: boolean) => !v)}>
+                  {showAllRows ? "Afficher moins" : "Afficher plus"}
+                </Button>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -635,8 +586,8 @@ export default function TradePulseApp() {
             <div className="text-white text-lg font-bold mb-2">Gérer les symboles</div>
             <ListManager
               items={symbols}
-              onAdd={(v) => setSymbols(arr => Array.from(new Set([...arr, v.toUpperCase()])))}
-              onRemove={(v) => setSymbols(arr => arr.filter(x => x !== v))}
+              onAdd={(v: string) => setSymbols(arr => Array.from(new Set([...arr, v.toUpperCase()])))}
+              onRemove={(v: string) => setSymbols(arr => arr.filter(x => x !== v))}
               placeholder="ex: XAUUSD, US100, EURUSD"
             />
           </DialogContent>
@@ -647,8 +598,8 @@ export default function TradePulseApp() {
             <div className="text-white text-lg font-bold mb-2">Gérer les setups</div>
             <ListManager
               items={setups}
-              onAdd={(v) => setSetups(arr => Array.from(new Set([...arr, v])))}
-              onRemove={(v) => setSetups(arr => arr.filter(x => x !== v))}
+              onAdd={(v: string) => setSetups(arr => Array.from(new Set([...arr, v])))}
+              onRemove={(v: string) => setSetups(arr => arr.filter(x => x !== v))}
               placeholder="ex: Breakout, Pullback, Rejet"
             />
           </DialogContent>
@@ -688,7 +639,7 @@ export default function TradePulseApp() {
         </Dialog>
 
         <footer className="text-xs text-white/70 pt-6">
-          <p>⚠️ Prototype synchronisé (Supabase). Calculs simplifiés.</p>
+          <p>⚠️ Prototype local. Calculs simplifiés.</p>
         </footer>
       </div>
     </div>
@@ -741,97 +692,12 @@ function MiniBarCard({ title, data, unitLabel }: {title:string; data:{name:strin
               }}
             />
             <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-              {data.map((d, i) => (<Cell key={i} fill={d.value >= 0 ? GREEN : RED} />))}
+              {data.map((d: {name:string; value:number}, i: number) => (<Cell key={i} fill={d.value >= 0 ? GREEN : RED} />))}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
       </CardContent>
     </Card>
-  );
-}
-
-/* ——— Formulaire ——— */
-function TradeForm({ initial, onSave, onCancel, symbols, setups }: any) {
-  const initialR = typeof initial?.R === "number" ? initial.R : (computeR(initial || {}) || 0);
-  const [form, setForm] = useState({
-    id: initial?.id as string | undefined,
-    date: (initial?.date as string) || new Date().toISOString().slice(0, 10),
-    symbol: (initial?.symbol as string) || ((symbols[0] as string) || ""),
-    direction: (initial?.direction as "LONG"|"SHORT") || "LONG",
-    setup: (initial?.setup as string) || ((setups[0] as string) || ""),
-    RInput: String(initialR),
-  });
-  const parsedR = Number(form.RInput);
-  const previewR = Number.isFinite(parsedR) ? parsedR : 0;
-
-  return (
-    <div className="space-y-5 text-white">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Field label="Date">
-          <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="bg-white/5 border-white/20 text-white" />
-        </Field>
-        <Field label="Direction">
-          <Select value={form.direction} onValueChange={(v) => setForm({ ...form, direction: v as "LONG"|"SHORT" })}>
-            <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="LONG">Long</SelectItem><SelectItem value="SHORT">Short</SelectItem></SelectContent>
-          </Select>
-        </Field>
-        <Field label="Symbole">
-          {symbols && (symbols as string[]).length ? (
-            <Select value={form.symbol} onValueChange={(v) => setForm({ ...form, symbol: v })}>
-              <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
-              <SelectContent>{(symbols as string[]).map((s: string) => (<SelectItem key={s} value={s}>{s}</SelectItem>))}</SelectContent>
-            </Select>
-          ) : (
-            <Input value={form.symbol} onChange={(e) => setForm({ ...form, symbol: e.target.value.toUpperCase() })} className="bg-white/5 border-white/20 text-white" />
-          )}
-        </Field>
-        <Field label="Setup">
-          {setups && (setups as string[]).length ? (
-            <Select value={form.setup} onValueChange={(v) => setForm({ ...form, setup: v })}>
-              <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
-              <SelectContent>{(setups as string[]).map((s: string) => (<SelectItem key={s} value={s}>{s}</SelectItem>))}</SelectContent>
-            </Select>
-          ) : (
-            <Input value={form.setup} onChange={(e) => setForm({ ...form, setup: e.target.value })} className="bg-white/5 border-white/20 text-white" />
-          )}
-        </Field>
-
-        <Field label="Résultat (R)">
-          <Input
-            type="number"
-            step={1}
-            value={form.RInput}
-            onChange={(e) => setForm({ ...form, RInput: e.target.value })}
-            className="bg-white/5 border-white/20 text-white"
-          />
-        </Field>
-      </div>
-
-      <div className="flex items-center justify-between pt-2">
-        <div className="text-sm text-white/80">
-          Aperçu : <span className={`font-semibold ${previewR > 0 ? "text-emerald-400" : previewR < 0 ? "text-rose-400" : "text-white"}`}>{r2(previewR)}R</span>
-        </div>
-        <div className="flex gap-2">
-          <Button onClick={onCancel} className="rounded-xl bg-transparent text-white border border-white/30 hover:bg-white/10">Annuler</Button>
-          <Button className="rounded-xl" style={{ backgroundColor: ACCENT }}
-            onClick={() => {
-              const n = Number(form.RInput);
-              const cleanR = Number.isFinite(n) ? n : 0;
-              onSave({ id: form.id, date: form.date, symbol: form.symbol, direction: form.direction, setup: form.setup, R: cleanR });
-            }}
-          >Enregistrer</Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-function Field({ label, children }: {label:string; children: React.ReactNode}) {
-  return (
-    <div className="space-y-1">
-      <Label className="text-xs uppercase tracking-wider text-white/70">{label}</Label>
-      {children}
-    </div>
   );
 }
 
@@ -886,19 +752,4 @@ function getRangeStart(range: string) {
   if (range === "QTD") { const qStartMonth = Math.floor(m / 3) * 3; return `${y}-${pad2(qStartMonth + 1)}-01`; }
   if (range === "MTD") return `${y}-${pad2(m + 1)}-01`;
   return null;
-}
-
-/* ——— Tests courts ——— */
-function runTests(){
-  function A(a:any,e:any,m:string){const ok=(Number.isNaN(a)&&Number.isNaN(e))||a===e;if(!ok)throw new Error(`${m}: got ${a}, expected ${e}`);}
-  try{
-    const s1=buildEquityR(["2025-01-10"],[2]);console.assert(s1.length===2&&s1[0].value===0&&s1[1].value===2&&s1[0].x===0&&s1[1].x===1,"equity start +");
-    const s2=buildEquityR(["2025-01-10"],[-1.5]);console.assert(s2.length===2&&s2[1].value===-1.5,"equity start -");
-    const d=densifyAtZero([{date:"A",x:0,value:-1},{date:"B",x:1,value:1}]);console.assert(d.length===3&&d[1].value===0&&d[1].x>0&&d[1].x<1,"cross 0");
-    console.assert(Math.abs(computeR({direction:"LONG",entry:100,stop:90,exit:110})-1)<1e-9,"LONG 1R");
-    console.assert(Math.abs(computeR({direction:"SHORT",entry:100,stop:110,exit:95})-0.5)<1e-9,"SHORT 0.5R");
-    const st=longestStreaks([1,0.3,-0.2,-1,0.1,0.2,0.3,-0.1]);A(st.bestWin,3,"streak win");A(st.bestLoss,2,"streak loss");
-    const dd=buildEquityR(["2025-01-01","2025-01-01","2025-01-02","2025-01-10"],[1,-0.5,2,-1]);for(let i=2;i<dd.length;i++){console.assert(Math.abs((dd[i].x-dd[i-1].x)-1)<1e-9,"x spacing 1")}
-    console.log("TradePulse tests passed ✅");
-  }catch(e){console.error("TradePulse tests failed ❌",e);}
 }
