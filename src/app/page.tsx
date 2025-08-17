@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
@@ -16,9 +16,25 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import {
   Plus, TrendingUp, TrendingDown, ListPlus, Tags, Banknote, Settings, Trash2, Trophy, BarChart3, Brain
 } from 'lucide-react';
-import {
-  AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, Line, BarChart, Bar, Cell, ReferenceLine, CartesianGrid
-} from 'recharts';
+
+/* ------------------------------------------------------------------ */
+/*  IMPORTANT : on NE PAS importe 'recharts' en haut.                 */
+/*  On le charge dynamiquement côté client après le mount.            */
+/* ------------------------------------------------------------------ */
+
+type RechartsMod = typeof import('recharts');
+function useRecharts() {
+  const [R, setR] = useState<RechartsMod | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const mod = await import('recharts');
+      if (alive) setR(mod);
+    })();
+    return () => { alive = false; };
+  }, []);
+  return R;
+}
 
 /* ——— Constantes UI ——— */
 const ACCENT = '#ff008e';
@@ -27,7 +43,7 @@ const GREEN  = '#00F5A8';
 const RED    = '#FF2F66';
 const CURRENCIES = { EUR: '€', USD: '$' } as const;
 
-/* ——— Types locaux ——— */
+/* ——— Types ——— */
 type Direction = 'LONG'|'SHORT';
 type TradeRow = {
   id: string;
@@ -37,24 +53,20 @@ type TradeRow = {
   setup?: string;
   notes?: string;
   R?: number;
-  entry?: number;
-  stop?: number;
-  exit?: number;
+  entry?: number; stop?: number; exit?: number;
 };
 type EquityPoint = { date?: string; x: number; value: number };
 
-/* ——— Bouton Connexion / Déconnexion ——— */
+/* ——— Auth Button ——— */
 function AuthButton() {
   const router = useRouter();
-  const [email, setEmail] = React.useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
 
-  React.useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setEmail(data.session?.user.email ?? null);
-    });
-    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      setEmail(session?.user.email ?? null);
-    });
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) =>
+      setEmail(session?.user.email ?? null)
+    );
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -63,10 +75,7 @@ function AuthButton() {
       <span className="hidden sm:block text-white/70 text-xs">{email}</span>
       <button
         className="rounded-2xl bg-transparent text-white border border-white/30 hover:bg-white/10 px-3 h-9"
-        onClick={async () => {
-          await supabase.auth.signOut();
-          router.replace('/auth');
-        }}
+        onClick={async () => { await supabase.auth.signOut(); router.replace('/auth'); }}
       >
         Déconnexion
       </button>
@@ -85,55 +94,39 @@ function AuthButton() {
 const uid  = () => Math.random().toString(36).slice(2, 10);
 const r2   = (n: any) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad2 = (n: number) => String(n).padStart(2, '0');
+const safeNumber = (x: any) => Number.isFinite(Number(x)) ? Number(x) : 0;
 
 function fmtNum(n: number) {
-  return new Intl.NumberFormat('fr-FR', {
-    maximumFractionDigits: 2,
-    minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
-  }).format(n);
+  return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2, minimumFractionDigits: Number.isInteger(n) ? 0 : 2 }).format(n);
 }
 function fmtMoneyRight(val: number, code: keyof typeof CURRENCIES) {
-  const sym = CURRENCIES[code] || '';
-  return `${fmtNum(val)} ${sym}`;
+  const sym = CURRENCIES[code] || ''; return `${fmtNum(val)} ${sym}`;
 }
 
-/* ——— Dates ——— */
+/* Dates helpers */
 function parseIsoMaybe(s: string) {
-  const d1 = new Date(s);
-  if (!isNaN(d1.getTime())) return d1;
-  const d2 = new Date(`${s}T00:00:00`);
-  if (!isNaN(d2.getTime())) return d2;
+  const d1 = new Date(s); if (!isNaN(d1.getTime())) return d1;
+  const d2 = new Date(`${s}T00:00:00`); if (!isNaN(d2.getTime())) return d2;
   return null;
 }
 function safeTime(s: string | null | undefined) {
-  const d = s ? parseIsoMaybe(s) : null;
-  return d ? d.getTime() : null;
+  const d = s ? parseIsoMaybe(s) : null; return d ? d.getTime() : null;
 }
 function isoBetween(a: string, b: string, t: number) {
   const A = safeTime(a), B = safeTime(b);
-  if (A == null || B == null || !isFinite(t)) return `${String(a)}~${String(b)}@${Math.max(0, Math.min(100, Math.round(Number(t) * 100)))}`;
-  const ms = A + t * (B - A);
-  return new Date(ms).toISOString().slice(0, 10);
+  if (A == null || B == null || !isFinite(t)) return `${a}~${b}`;
+  return new Date(A + t * (B - A)).toISOString().slice(0, 10);
 }
 function prevDate(isoDate: string) {
-  const t = safeTime(isoDate);
-  if (t == null) return isoDate;
-  const d = new Date(t);
-  d.setDate(d.getDate() - 1);
+  const t = safeTime(isoDate); if (t == null) return isoDate;
+  const d = new Date(t); d.setDate(d.getDate() - 1);
   return d.toISOString().slice(0, 10);
 }
-function safeNumber(x: any) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : 0;
-}
 
-/* ——— Calculs Equity ——— */
+/* Equity helpers */
 function buildEquityR(dates: string[], Rs: number[]): EquityPoint[] {
   let cum = 0;
-  const arr = dates.map((date, i) => {
-    cum += safeNumber(Rs[i]);
-    return { date, x: i + 1, value: cum };
-  });
+  const arr = dates.map((date, i) => { cum += safeNumber(Rs[i]); return { date, x: i + 1, value: cum }; });
   return arr.length ? [{ date: prevDate(dates[0]), x: 0, value: 0 }, ...arr] : [];
 }
 function densifyAtZero(points: EquityPoint[]): EquityPoint[] {
@@ -164,18 +157,17 @@ function computeR(trade: Partial<TradeRow>) {
 }
 function longestStreaks(Rs: number[]) {
   let win = 0, bestWin = 0, loss = 0, bestLoss = 0;
-  for (const r of Rs) {
-    if (r > 0) { win++; loss = 0; bestWin = Math.max(bestWin, win); }
-    else { loss++; win = 0; bestLoss = Math.max(bestLoss, loss); }
-  }
+  for (const r of Rs) { if (r > 0) { win++; loss = 0; bestWin = Math.max(bestWin, win); } else { loss++; win = 0; bestLoss = Math.max(bestLoss, loss); } }
   return { bestWin, bestLoss };
 }
 
-/* ——— App ——— */
+/* ------------------------------------------------------------------ */
+/*  PAGE                                                              */
+/* ------------------------------------------------------------------ */
 export default function TradePulseApp() {
   const router = useRouter();
 
-  /* Auth guard — si pas connecté => /auth */
+  /* Auth guard */
   const [authChecked, setAuthChecked] = useState(false);
   useEffect(() => {
     let mounted = true;
@@ -187,16 +179,9 @@ export default function TradePulseApp() {
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       if (!session) router.replace('/auth');
     });
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-    };
+    return () => { mounted = false; sub.subscription.unsubscribe(); };
   }, [router]);
-  if (!authChecked) return null; // évite le flash
-
-  /* ✅ Anti-crash prod : on rend les graphes uniquement après mount */
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  if (!authChecked) return null;
 
   /* SETTINGS */
   const [settings, setSettings] = useState({
@@ -206,21 +191,18 @@ export default function TradePulseApp() {
     showMonetary: false,
   });
 
-  /* Données persistées (localStorage) */
+  /* Données (localStorage sécurisé) */
   const [trades, setTrades] = useState<TradeRow[]>(() => {
     if (typeof window === 'undefined') return [];
-    try { return JSON.parse(localStorage.getItem('mindrisk_trades') || '[]'); }
-    catch { return []; }
+    try { return JSON.parse(localStorage.getItem('mindrisk_trades') || '[]'); } catch { return []; }
   });
   const [symbols, setSymbols] = useState<string[]>(() => {
     if (typeof window === 'undefined') return [];
-    try { return JSON.parse(localStorage.getItem('mindrisk_symbols') || '[]'); }
-    catch { return []; }
+    try { return JSON.parse(localStorage.getItem('mindrisk_symbols') || '[]'); } catch { return []; }
   });
   const [setups, setSetups] = useState<string[]>(() => {
     if (typeof window === 'undefined') return [];
-    try { return JSON.parse(localStorage.getItem('mindrisk_setups') || '[]'); }
-    catch { return []; }
+    try { return JSON.parse(localStorage.getItem('mindrisk_setups') || '[]'); } catch { return []; }
   });
 
   /* Filtres/UI */
@@ -232,7 +214,6 @@ export default function TradePulseApp() {
   const [openSetupsManager, setOpenSetupsManager] = useState(false);
   const [openSettings, setOpenSettings] = useState(false);
 
-  /* Brouillons pour la modale Réglages */
   const [startEqDraft, setStartEqDraft] = useState('');
   const [riskDraft, setRiskDraft] = useState('');
   useEffect(() => {
@@ -265,31 +246,9 @@ export default function TradePulseApp() {
       .sort((a,b)=> (a.date < b.date ? -1 : 1));
   }, [trades, filters, startRange]);
 
-  const Rs = useMemo(
-    () => filtered.map(t => (typeof t.R === 'number' ? t.R : computeR(t)) || 0),
-    [filtered]
-  );
-
-  const equityR = useMemo(
-    () => densifyAtZero(buildEquityR(filtered.map(t => t.date), Rs)),
-    [filtered, Rs]
-  );
-
-  const segments = useMemo(() => {
-    const pts = equityR; if (pts.length < 2) return [] as {sign: 1|-1; data: EquityPoint[]}[];
-    const segs: {sign: 1|-1; data: EquityPoint[]}[] = [];
-    let seg: EquityPoint[] = [pts[0]];
-    let sign: 1 | -1 | 0 = (Math.sign(pts[0].value) as any) || 0;
-    for (let i = 1; i < pts.length; i++) {
-      const v = pts[i].value;
-      const s: number = (Math.sign(v) as any) || 0; seg.push(pts[i]);
-      if (v === 0 && i < pts.length - 1) { segs.push({ sign: sign >= 0 ? 1 : -1, data: seg }); seg = [pts[i]]; sign = 0; }
-      else if (sign === 0 && s !== 0) { sign = s as any; }
-      else if (s !== 0 && sign !== 0 && s !== sign) { segs.push({ sign: (sign >= 0 ? 1 : -1) as 1|-1, data: seg }); seg = [pts[i - 1], pts[i]]; sign = s as any; }
-    }
-    segs.push({ sign: (sign >= 0 ? 1 : -1) as 1|-1, data: seg });
-    return segs;
-  }, [equityR]);
+  const Rs = useMemo(() => filtered.map(t => (typeof t.R === 'number' ? t.R : computeR(t)) || 0), [filtered]);
+  const equityR = useMemo(() => densifyAtZero(buildEquityR(filtered.map(t => t.date), Rs)), [filtered, Rs]);
+  const { bestWin, bestLoss } = useMemo(() => longestStreaks(Rs), [Rs]);
 
   const yDomain = useMemo<[number, number]>(() => {
     if (equityR.length === 0) return [-1, 1];
@@ -303,11 +262,8 @@ export default function TradePulseApp() {
   const wins = Rs.filter(r => r > 0).length;
   const winRate = Rs.length ? (wins / Rs.length) * 100 : 0;
   const avgR = average(Rs);
-  const { bestWin, bestLoss } = useMemo(() => longestStreaks(Rs), [Rs]);
 
   const currencySymbol = CURRENCIES[settings.currencyCode];
-  const fmtR = (val: number) => `${r2(val)}R`;
-  const fmtMoney = (valR: number) => `${currencySymbol}${r2(valR * settings.defaultRiskPerTrade)}`;
   const valueFromR = (valR: number) => settings.showMonetary ? valR * settings.defaultRiskPerTrade : valR;
   const unitLabel = settings.showMonetary ? currencySymbol : 'R';
 
@@ -326,9 +282,6 @@ export default function TradePulseApp() {
     : `${totalR > 0 ? '+' : ''}${r2(totalR)}R`;
 
   const titleColor = totalR > 0 ? 'text-emerald-400' : totalR < 0 ? 'text-rose-400' : 'text-white';
-  const subtitle = settings.showMonetary
-    ? `Capital total : ${fmtMoneyRight(r2(totalCapitalMoney), settings.currencyCode)}`
-    : 'Courbe d’équité — R cumulés';
 
   function upsertTrade(t: Partial<TradeRow> & { R: number }) {
     if (t.id) setTrades(cur => cur.map(x => x.id === t.id ? { ...(x as TradeRow), ...t } as TradeRow : x));
@@ -336,6 +289,9 @@ export default function TradePulseApp() {
   }
   function removeTrade(id: string) { setTrades(cur => cur.filter(t => t.id !== id)); }
 
+  /* ------------------------------------------------------------------ */
+  /*  STYLE LÉGER                                                        */
+  /* ------------------------------------------------------------------ */
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0b0b10] via-[#141421] to-[#0b0b10] text-white p-6">
       <style>{`
@@ -343,22 +299,17 @@ export default function TradePulseApp() {
         .tp-logo:hover svg{filter:drop-shadow(0 0 10px rgba(255,0,142,.5));}
         .card-plain{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.15);}
         .grad-filters{background:radial-gradient(80% 120% at 0% 0%, rgba(100,140,255,.14) 0%, transparent 60%),radial-gradient(60% 100% at 100% 0%, rgba(180,120,255,.12) 0%, transparent 65%),rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.22);}
-        .grad-kpi-rate{background:radial-gradient(120% 140% at 15% -10%, rgba(126,109,255,.28) 0%, transparent 60%),radial-gradient(120% 140% at 120% 0%, rgba(30,144,255,.22) 0%, transparent 65%),rgba(255,255,255,.05);border:1px solid rgba(126,109,255,.25);}
-        .grad-kpi-avg{background:radial-gradient(120% 140% at 15% -10%, rgba(255,184,108,.30) 0%, transparent 60%),radial-gradient(120% 140% at 120% 0%, rgba(255,94,105,.18) 0%, transparent 65%),rgba(255,255,255,.05);border:1px solid rgba(255,184,108,.25);}
-        .grad-kpi-best{background:radial-gradient(120% 140% at 20% -10%, rgba(0,245,168,.30) 0%, transparent 60%),radial-gradient(120% 140% at 120% 0%, rgba(126,109,255,.16) 0%, transparent 65%),rgba(255,255,255,.05);border:1px solid rgba(0,245,168,.28);}
-        .grad-kpi-worst{background:radial-gradient(120% 140% at 15% -10%, rgba(255,47,102,.28) 0%, transparent 60%),radial-gradient(110% 140% at 120% 0%, rgba(255,125,150,.16) 0%, transparent 65%),rgba(255,255,255,.05);border:1px solid rgba(255,47,102,.28);}
         .grad-journal{background:radial-gradient(140% 140% at -10% 110%, rgba(126,109,255,.45) 0%, rgba(126,109,255,.18) 45%, transparent 65%),radial-gradient(120% 140% at 120% -10%, rgba(0,200,255,.35) 0%, rgba(0,200,255,.12) 55%, transparent 70%),radial-gradient(100% 100% at 50% 0%, rgba(255,0,142,.25) 0%, transparent 70%),rgba(255,255,255,.05);border:1px solid rgba(126,109,255,.35);box-shadow:0 12px 32px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.06);}
-        .grad-mini{background:radial-gradient(130% 160% at 0% 0%, rgba(32,120,255,.20) 0%, transparent 60%),radial-gradient(110% 150% at 100% 15%, rgba(0,200,255,.14) 0%, transparent 65%),linear-gradient(180deg, rgba(255,255,255,.04), rgba(0,0,0,.10));border:1px solid rgba(180,200,255,.20);box-shadow: 0 8px 18px rgba(0,0,0,.25), inset 0 0 0 1px rgba(255,255,255,.04);}
       `}</style>
 
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* En-tête */}
+        {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div className="flex items-center gap-3 tp-logo">
             <Brain size={50} color={ACCENT} strokeWidth={2.25} />
             <div>
               <h1 className="tp-wordmark text-3xl md:text-4xl font-extrabold tracking-tight">TradePulse</h1>
-              <p className="text-sm text-white/80">Journal de trading — prototype local</p>
+              <p className="text-sm text-white/80">Journal de trading — synchronisé</p>
             </div>
           </div>
 
@@ -389,8 +340,6 @@ export default function TradePulseApp() {
             <Button className="rounded-2xl bg-transparent text-white border border-white/30 hover:bg-white/10" onClick={() => setOpenSetupsManager(true)}>
               <Tags className="h-4 w-4 mr-2" /> Gérer setups
             </Button>
-
-            {/* Connexion / Déconnexion */}
             <AuthButton />
           </div>
         </div>
@@ -410,7 +359,7 @@ export default function TradePulseApp() {
               </div>
               <div className="col-span-6 md:col-span-2">
                 <Label className="block mb-2 text-white/70">Période</Label>
-                <Select value={range} onValueChange={(v) => setRange(v)}>
+                <Select value={range} onValueChange={setRange}>
                   <SelectTrigger className="w-full bg-white/5 border-white/20 text-white"><SelectValue placeholder="Tout" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="ALL">Tout l’historique</SelectItem>
@@ -433,7 +382,7 @@ export default function TradePulseApp() {
               </div>
               <div className="col-span-6 md:col-span-2">
                 <Label className="block mb-2 text-white/70">Direction</Label>
-                <Select value={filters.direction} onValueChange={(v) => setFilters(f => ({ ...f, direction: v }))}>
+                <Select value={filters.direction} onValueChange={(v) => setFilters(f => ({ ...f, direction: v as any }))}>
                   <SelectTrigger className="w-full bg-white/5 border-white/20 text-white"><SelectValue placeholder="Toutes" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="ALL">Toutes</SelectItem>
@@ -447,8 +396,8 @@ export default function TradePulseApp() {
                 <Select value={filters.setup} onValueChange={(v) => setFilters(f => ({ ...f, setup: v }))}>
                   <SelectTrigger className="w-full bg-white/5 border-white/20 text-white"><SelectValue placeholder="Tous" /></SelectTrigger>
                   <SelectContent>
-                    {setups.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                     <SelectItem value="ALL">Tous</SelectItem>
+                    {setups.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                   </SelectContent>
                 </Select>
               </div>
@@ -458,100 +407,45 @@ export default function TradePulseApp() {
 
         {/* KPIs */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard title="Taux de gain" value={`${r2(winRate)}%`} icon={<Trophy />} variant="rate" />
-          <StatCard title="Moyenne (R)" value={r2(avgR)} icon={<BarChart3 />} variant="avg" />
-          <StatCard title="Meilleure série de gains" value={bestWin} icon={<TrendingUp />} variant="best" />
-          <StatCard title="Pire série de pertes" value={bestLoss} icon={<TrendingDown />} variant="worst" />
+          <StatCard title="Taux de gain" value={`${r2(winRate)}%`} icon={<Trophy />} />
+          <StatCard title="Moyenne (R)" value={r2(avgR)} icon={<BarChart3 />} />
+          <StatCard title="Meilleure série de gains" value={bestWin} icon={<TrendingUp />} />
+          <StatCard title="Pire série de pertes" value={bestLoss} icon={<TrendingDown />} />
         </div>
 
-        {/* Courbe d’équité — rendue seulement après mount pour éviter le crash prod */}
-        {mounted && (
-          <Card className="card-plain rounded-2xl">
-            <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className={`text-2xl font-extrabold ${titleColor}`}>{titleValue}</CardTitle>
-                <div className="text-xs text-white/60">{subtitle}</div>
+        {/* Courbe d’équité — rendue uniquement si Recharts est chargé */}
+        <Card className="card-plain rounded-2xl">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className={`text-2xl font-extrabold ${titleColor}`}>{titleValue}</CardTitle>
+              <div className="text-xs text-white/60">
+                {settings.showMonetary ? `Capital total : ${fmtMoneyRight(r2(totalCapitalMoney), settings.currencyCode)}` : 'Courbe d’équité — R cumulés'}
               </div>
-              <div className="flex items-center gap-2">
-                <Select value={settings.currencyCode} onValueChange={(v: 'EUR'|'USD') => setSettings(s => ({ ...s, currencyCode: v }))}>
-                  <SelectTrigger className="bg-white/5 border-white/20 text-white h-8 px-2"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="EUR">EUR (€)</SelectItem><SelectItem value="USD">USD ($)</SelectItem></SelectContent>
-                </Select>
-                <Button variant="ghost" className="rounded-xl text-white" onClick={() => setSettings(s => ({ ...s, showMonetary: !s.showMonetary }))} title={settings.showMonetary ? 'Afficher en R' : 'Afficher en €/$'}>
-                  <Banknote className={`h-5 w-5 ${settings.showMonetary ? '' : 'opacity-50'}`} />
-                </Button>
-                <Button variant="ghost" className="rounded-xl text-white" onClick={() => setOpenSettings(true)} title="Réglages">
-                  <Settings className="h-5 w-5" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="h-[26rem] md:h-[30rem]">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={equityR} margin={{ left: 12, right: 12 }}>
-                  <defs>
-                    <linearGradient id="eqPos" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor={GREEN} stopOpacity={0.9} />
-                      <stop offset="95%" stopColor={GREEN} stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="eqNeg" x1="0" y1="1" x2="0" y2="0">
-                      <stop offset="5%"  stopColor={RED} stopOpacity={0.9} />
-                      <stop offset="95%" stopColor={RED} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
+            </div>
+            <div className="flex items-center gap-2">
+              <Select value={settings.currencyCode} onValueChange={(v: 'EUR'|'USD') => setSettings(s => ({ ...s, currencyCode: v }))}>
+                <SelectTrigger className="bg-white/5 border-white/20 text-white h-8 px-2"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="EUR">EUR (€)</SelectItem><SelectItem value="USD">USD ($)</SelectItem></SelectContent>
+              </Select>
+              <Button variant="ghost" className="rounded-xl text-white" onClick={() => setSettings(s => ({ ...s, showMonetary: !s.showMonetary }))} title={settings.showMonetary ? 'Afficher en R' : 'Afficher en €/$'}>
+                <Banknote className={`h-5 w-5 ${settings.showMonetary ? '' : 'opacity-50'}`} />
+              </Button>
+              <Button variant="ghost" className="rounded-xl text-white" onClick={() => setOpenSettings(true)} title="Réglages">
+                <Settings className="h-5 w-5" />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="h-[26rem] md:h-[30rem]">
+            <EquityChart data={equityR} yDomain={yDomain} showMonetary={settings.showMonetary} risk={settings.defaultRiskPerTrade} />
+          </CardContent>
+        </Card>
 
-                  <XAxis dataKey="x" type="number" domain={['dataMin','dataMax']} hide />
-                  <YAxis hide domain={yDomain} />
-                  <Tooltip
-                    content={({ active, payload }: any) => {
-                      if (!active || !payload || !payload.length) return null;
-                      const p: any = payload[0]?.payload || {};
-                      const v = typeof p.value === 'number' ? p.value : 0;
-                      return (
-                        <div className="rounded-md border border-white/20 bg-black/70 px-3 py-2 text-xs text-white">
-                          <div className="font-semibold mb-1">{p.date ? `Trade du ${p.date}` : 'Point technique'}</div>
-                          <div>{settings.showMonetary ? fmtMoney(v) : fmtR(v)}</div>
-                        </div>
-                      );
-                    }}
-                  />
-
-                  {segments.map((seg, i) => (
-                    <Area
-                      key={i}
-                      type="linear"
-                      data={seg.data}
-                      dataKey="value"
-                      stroke="none"
-                      fill={seg.sign >= 0 ? 'url(#eqPos)' : 'url(#eqNeg)'}
-                      isAnimationActive={false}
-                    />
-                  ))}
-
-                  <Line
-                    type="linear"
-                    dataKey="value"
-                    stroke={LINE}
-                    strokeWidth={2}
-                    dot={false}
-                    isAnimationActive={false}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    connectNulls
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Mini-charts — rendus seulement après mount */}
-        {mounted && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <MiniBarCard title={`Profit par symbole (${unitLabel})`} data={aggregate(byKey('symbol', filtered, Rs, valueFromR)).slice(0,8)} unitLabel={unitLabel} />
-            <MiniBarCard title={`Profit par setup (${unitLabel})`}  data={aggregate(byKey('setup',  filtered, Rs, valueFromR)).slice(0,8)} unitLabel={unitLabel} />
-            <MiniBarCard title={`Profit par direction (${unitLabel})`} data={aggregate(byKey('direction',filtered, Rs, valueFromR))} unitLabel={unitLabel} />
-          </div>
-        )}
+        {/* Mini-charts */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <MiniBarCard title={`Profit par symbole (${unitLabel})`} data={aggregate(byKey('symbol', filtered, Rs, valueFromR)).slice(0,8)} unitLabel={unitLabel} />
+          <MiniBarCard title={`Profit par setup (${unitLabel})`}  data={aggregate(byKey('setup',  filtered, Rs, valueFromR)).slice(0,8)} unitLabel={unitLabel} />
+          <MiniBarCard title={`Profit par direction (${unitLabel})`} data={aggregate(byKey('direction',filtered, Rs, valueFromR))} unitLabel={unitLabel} />
+        </div>
 
         {/* Journal */}
         <Card className="grad-journal rounded-2xl">
@@ -671,25 +565,18 @@ export default function TradePulseApp() {
         </Dialog>
 
         <footer className="text-xs text-white/70 pt-6">
-          <p>⚠️ Prototype local. Calculs simplifiés.</p>
+          <p>⚠️ Prototype. Graphes chargés côté client pour compatibilité prod.</p>
         </footer>
       </div>
     </div>
   );
 }
 
-/* ——— Composants UI ——— */
-function StatCard({
-  title, value, icon, variant,
-}: { title:string; value:any; icon:any; variant:'rate'|'avg'|'best'|'worst' }) {
-  const cls =
-    variant === 'rate'  ? 'grad-kpi-rate'  :
-    variant === 'avg'   ? 'grad-kpi-avg'   :
-    variant === 'best'  ? 'grad-kpi-best'  :
-                          'grad-kpi-worst';
+/* --------------------------- Composants UI ------------------------- */
+function StatCard({ title, value, icon }: { title:string; value:any; icon:any }) {
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-      <Card className={`${cls} rounded-2xl h-full`}>
+      <Card className="card-plain rounded-2xl h-full">
         <CardHeader className="flex flex-row items-center justify-between pb-2">
           <CardTitle className="text-sm text-white/85">{title}</CardTitle>
           <div style={{ color: ACCENT }}>{icon}</div>
@@ -702,39 +589,126 @@ function StatCard({
   );
 }
 
+/* ----------------------- Graphes dynamiques ------------------------ */
+function EquityChart({
+  data, yDomain, showMonetary, risk
+}: { data: EquityPoint[]; yDomain: [number, number]; showMonetary: boolean; risk: number }) {
+  const R = useRecharts();
+  if (!R) return <div className="h-full w-full rounded-xl border border-white/10 bg-white/5 grid place-items-center text-white/60">Chargement du graphe…</div>;
+
+  // Segments pos/neg
+  const segments = React.useMemo(() => {
+    if (data.length < 2) return [] as {sign: 1|-1; data: EquityPoint[]}[];
+    const segs: {sign: 1|-1; data: EquityPoint[]}[] = [];
+    let seg: EquityPoint[] = [data[0]];
+    let sign: 1 | -1 | 0 = (Math.sign(data[0].value) as any) || 0;
+    for (let i = 1; i < data.length; i++) {
+      const v = data[i].value;
+      const s: number = (Math.sign(v) as any) || 0; seg.push(data[i]);
+      if (v === 0 && i < data.length - 1) { segs.push({ sign: sign >= 0 ? 1 : -1, data: seg }); seg = [data[i]]; sign = 0; }
+      else if (sign === 0 && s !== 0) { sign = s as any; }
+      else if (s !== 0 && sign !== 0 && s !== sign) { segs.push({ sign: (sign >= 0 ? 1 : -1) as 1|-1, data: seg }); seg = [data[i - 1], data[i]]; sign = s as any; }
+    }
+    segs.push({ sign: (sign >= 0 ? 1 : -1) as 1|-1, data: seg });
+    return segs;
+  }, [data]);
+
+  return (
+    <R.ResponsiveContainer width="100%" height="100%">
+      <R.AreaChart data={data} margin={{ left: 12, right: 12 }}>
+        <defs>
+          <linearGradient id="eqPos" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%"  stopColor={GREEN} stopOpacity={0.9} />
+            <stop offset="95%" stopColor={GREEN} stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="eqNeg" x1="0" y1="1" x2="0" y2="0">
+            <stop offset="5%"  stopColor={RED} stopOpacity={0.9} />
+            <stop offset="95%" stopColor={RED} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+
+        <R.XAxis dataKey="x" type="number" domain={['dataMin','dataMax']} hide />
+        <R.YAxis hide domain={yDomain} />
+        <R.Tooltip
+          content={({ active, payload }: any) => {
+            if (!active || !payload || !payload.length) return null;
+            const p: any = payload[0]?.payload || {};
+            const v = typeof p.value === 'number' ? p.value : 0;
+            return (
+              <div className="rounded-md border border-white/20 bg-black/70 px-3 py-2 text-xs text-white">
+                <div className="font-semibold mb-1">{p.date ? `Trade du ${p.date}` : 'Point technique'}</div>
+                <div>{showMonetary ? `€${r2(v * risk)}` : `${r2(v)}R`}</div>
+              </div>
+            );
+          }}
+        />
+
+        {segments.map((seg, i) => (
+          <R.Area
+            key={i}
+            type="linear"
+            data={seg.data}
+            dataKey="value"
+            stroke="none"
+            fill={seg.sign >= 0 ? 'url(#eqPos)' : 'url(#eqNeg)'}
+            isAnimationActive={false}
+          />
+        ))}
+
+        <R.Line
+          type="linear"
+          dataKey="value"
+          stroke={LINE}
+          strokeWidth={2}
+          dot={false}
+          isAnimationActive={false}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          connectNulls
+        />
+      </R.AreaChart>
+    </R.ResponsiveContainer>
+  );
+}
+
 function MiniBarCard({ title, data, unitLabel }:{
   title:string; data:{name:string; value:number}[]; unitLabel:string
 }) {
+  const R = useRecharts();
   return (
-    <Card className="grad-mini rounded-2xl">
+    <Card className="card-plain rounded-2xl">
       <CardHeader className="pb-2"><CardTitle className="text-sm text-white/85">{title}</CardTitle></CardHeader>
       <CardContent className="h-60">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ left: 8, right: 8, top: 8, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
-            <XAxis dataKey="name" tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 11 }} tickLine={false} axisLine={false} />
-            <YAxis hide domain={data.length ? undefined : [-1, 1]} />
-            <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
-            <Tooltip
-              cursor={{ fill: 'rgba(255,255,255,0.04)' }}
-              content={({ active, payload, label }: any) => {
-                if (!active || !payload || !payload.length) return null;
-                const v = Number(payload[0].value || 0);
-                const s = unitLabel === 'R' ? `${r2(v)}R` : `${unitLabel}${r2(v)}`;
-                return <div className="rounded-md border border-white/20 bg-black/70 px-3 py-2 text-xs text-white">{label}: {s}</div>;
-              }}
-            />
-            <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-              {data.map((d, i) => (<Cell key={i} fill={d.value >= 0 ? GREEN : RED} />))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
+        {!R ? (
+          <div className="h-full w-full rounded-xl border border-white/10 bg-white/5 grid place-items-center text-white/60">Chargement…</div>
+        ) : (
+          <R.ResponsiveContainer width="100%" height="100%">
+            <R.BarChart data={data} margin={{ left: 8, right: 8, top: 8, bottom: 0 }}>
+              <R.CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+              <R.XAxis dataKey="name" tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 11 }} tickLine={false} axisLine={false} />
+              <R.YAxis hide domain={data.length ? undefined : [-1, 1]} />
+              <R.ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
+              <R.Tooltip
+                cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                content={({ active, payload, label }: any) => {
+                  if (!active || !payload || !payload.length) return null;
+                  const v = Number(payload[0].value || 0);
+                  const s = unitLabel === 'R' ? `${r2(v)}R` : `${unitLabel}${r2(v)}`;
+                  return <div className="rounded-md border border-white/20 bg-black/70 px-3 py-2 text-xs text-white">{label}: {s}</div>;
+                }}
+              />
+              <R.Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                {data.map((d, i) => (<R.Cell key={i} fill={d.value >= 0 ? GREEN : RED} />))}
+              </R.Bar>
+            </R.BarChart>
+          </R.ResponsiveContainer>
+        )}
       </CardContent>
     </Card>
   );
 }
 
-/* ——— Formulaire ——— */
+/* ----------------------- Formulaire / Listes ---------------------- */
 function TradeForm({ initial, onSave, onCancel, symbols, setups }:{
   initial: Partial<TradeRow>;
   onSave: (t: Partial<TradeRow> & { R: number }) => void;
@@ -825,7 +799,7 @@ function Field({ label, children }:{label:string; children: React.ReactNode}) {
   );
 }
 
-/* ——— Gestion listes ——— */
+/* --- Gestion listes --- */
 function ListManager({ items, onAdd, onRemove, placeholder }:{
   items:string[]; onAdd:(v:string)=>void; onRemove:(v:string)=>void; placeholder:string;
 }) {
@@ -849,7 +823,7 @@ function ListManager({ items, onAdd, onRemove, placeholder }:{
   );
 }
 
-/* ——— Agrégations mini-charts ——— */
+/* --- Agrégations mini-charts --- */
 const byKey = (
   key: 'symbol'|'setup'|'direction',
   filtered: TradeRow[],
@@ -866,7 +840,7 @@ const aggregate = (rows: {k:string;v:number}[]) =>
     ([name, value]) => ({ name, value })
   ).sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
 
-/* ——— Périodes ——— */
+/* --- Périodes --- */
 function getRangeStart(range: string) {
   if (range === 'ALL') return null;
   const now = new Date(); const y = now.getFullYear(); const m = now.getMonth();
@@ -875,19 +849,4 @@ function getRangeStart(range: string) {
   if (range === 'QTD') { const qStartMonth = Math.floor(m / 3) * 3; return `${y}-${pad2(qStartMonth + 1)}-01`; }
   if (range === 'MTD') return `${y}-${pad2(m + 1)}-01`;
   return null;
-}
-
-/* ——— Tests courts ——— */
-function runTests(){
-  function A(a:any,e:any,m:string){const ok=(Number.isNaN(a)&&Number.isNaN(e))||a===e;if(!ok)throw new Error(`${m}: got ${a}, expected ${e}`);}
-  try{
-    const s1=buildEquityR(['2025-01-10'],[2]);console.assert(s1.length===2&&s1[0].value===0&&s1[1].value===2&&s1[0].x===0&&s1[1].x===1,'equity start +');
-    const s2=buildEquityR(['2025-01-10'],[-1.5]);console.assert(s2.length===2&&s2[1].value===-1.5,'equity start -');
-    const d=densifyAtZero([{date:'A',x:0,value:-1},{date:'B',x:1,value:1}]);console.assert(d.length===3&&d[1].value===0&&d[1].x>0&&d[1].x<1,'cross 0');
-    console.assert(Math.abs(computeR({direction:'LONG',entry:100,stop:90,exit:110})-1)<1e-9,'LONG 1R');
-    console.assert(Math.abs(computeR({direction:'SHORT',entry:100,stop:110,exit:95})-0.5)<1e-9,'SHORT 0.5R');
-    const st=longestStreaks([1,0.3,-0.2,-1,0.1,0.2,0.3,-0.1]);A(st.bestWin,3,'streak win');A(st.bestLoss,2,'streak loss');
-    const dd=buildEquityR(['2025-01-01','2025-01-01','2025-01-02','2025-01-10'],[1,-0.5,2,-1]);for(let i=2;i<dd.length;i++){console.assert(Math.abs((dd[i].x-dd[i-1].x)-1)<1e-9,'x spacing 1')}
-    console.log('TradePulse tests passed ✅');
-  }catch(e){console.error('TradePulse tests failed ❌',e);}
 }
